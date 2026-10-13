@@ -1,0 +1,63 @@
+# ── Stage 1: instalar dependências ───────────────────────────────
+FROM node:20-slim AS deps
+
+# Libs de runtime necessárias para o módulo nativo "canvas" (prebuild-install)
+# No Debian slim, canvas já possui binários pré-compilados para glibc/linux,
+# mas as libs do sistema precisam existir para o binding carregar.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libjpeg62-turbo-dev \
+    libgif-dev \
+    librsvg2-dev \
+    build-essential \
+    python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copia apenas os manifests para aproveitar cache do Docker
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# ── Stage 2: runtime ─────────────────────────────────────────────
+FROM node:20-slim
+
+# Apenas libs de runtime (sem -dev, sem compilador)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libjpeg62-turbo \
+    libgif7 \
+    librsvg2-2 \
+    wget \
+ && rm -rf /var/lib/apt/lists/*
+
+# Metadados
+LABEL maintainer="Very Tecnologia" \
+      service="svc-apm"
+
+WORKDIR /app
+
+# Usuário não-root por segurança
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+# Copia dependências do stage anterior
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copia código-fonte (respeitará .dockerignore)
+COPY . .
+
+# Garante que o usuário tem acesso ao diretório
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 3004
+
+# Healthcheck — o orquestrador sabe se o serviço está vivo
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:3004/health || exit 1
+
+CMD ["node", "server.js"]

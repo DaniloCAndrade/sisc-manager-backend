@@ -1,0 +1,138 @@
+# ============================================================
+# .gitlab-ci.yml — back-end-sisc
+#
+# This is a monorepo of 6 independently-built microservices
+# (svc-platform-control, svc-inventory, svc-apm, svc-apdex, svc-schedule,
+# svc-license), each with its own Dockerfile.<service> at the repo root and
+# its own build context (./<service>), matching docker-compose.yml. Because
+# of that, this repo cannot use the plain 2-line
+# `include: ci-templates/build-and-deploy.yml` (it assumes a single
+# Dockerfile at the repo root == one image == one gitops path). All 6
+# services also share the same gitops-config path (apps/sisc-manager) —
+# see front-sisc/.gitlab-ci.yml for the same pattern on the frontend side.
+#
+# This file mirrors the shared template's stages, tagging scheme and
+# promotion rules 1:1, just parameterized to build 6 images (via
+# parallel:matrix) and update all 6 image tags in a single gitops commit
+# per environment.
+#
+# Requires the same group CI/CD variables as the shared template:
+# HARBOR_REGISTRY, HARBOR_ROBOT_USERNAME, HARBOR_ROBOT_SECRET,
+# GITOPS_REPO, GITOPS_REPO_SSH_KEY, GITLAB_HOST.
+# ============================================================
+
+variables:
+  HARBOR_PROJECT: corp
+  GITOPS_APP_PATH: apps/sisc-manager
+
+stages:
+  - build
+  - deploy-qa
+  - deploy-staging
+  - deploy-prod
+
+# ============================================================
+#  BUILD — one job per service (parallel matrix), push to Harbor
+# ============================================================
+
+build-and-push:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  parallel:
+    matrix:
+      - SERVICE: svc-platform-control
+      - SERVICE: svc-inventory
+      - SERVICE: svc-apm
+      - SERVICE: svc-apdex
+      - SERVICE: svc-schedule
+      - SERVICE: svc-license
+  before_script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        IMAGE_TAG="$CI_COMMIT_TAG"
+      else
+        IMAGE_TAG="sha-${CI_COMMIT_SHORT_SHA}"
+      fi
+      IMAGE_FULL="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${SERVICE}:${IMAGE_TAG}"
+      echo "Building ${IMAGE_FULL} (context ./${SERVICE}, Dockerfile.${SERVICE})"
+  script:
+    - docker build -f "Dockerfile.${SERVICE}" -t "${IMAGE_FULL}" "./${SERVICE}"
+    - docker login -u "${HARBOR_ROBOT_USERNAME}" -p "${HARBOR_ROBOT_SECRET}" "${HARBOR_REGISTRY}"
+    - docker push "${IMAGE_FULL}"
+
+# ============================================================
+#  DEPLOY — update all 6 image tags in apps/sisc-manager/overlays/<env> in one commit
+# ============================================================
+
+.deploy:
+  image: alpine:3.20
+  needs:
+    - job: build-and-push
+  before_script:
+    - apk add --no-cache git openssh-client kustomize
+    - eval $(ssh-agent -s)
+    - chmod 600 "${GITOPS_REPO_SSH_KEY}"
+    - ssh-add "${GITOPS_REPO_SSH_KEY}"
+    - mkdir -p ~/.ssh && ssh-keyscan "${GITLAB_HOST}" >> ~/.ssh/known_hosts
+  script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        IMAGE_TAG="$CI_COMMIT_TAG"
+      else
+        IMAGE_TAG="sha-${CI_COMMIT_SHORT_SHA}"
+      fi
+      git clone -b "${GITOPS_BRANCH:-main}" "${GITOPS_REPO}" gitops-config
+      cd "gitops-config/${GITOPS_APP_PATH}/overlays/${DEPLOY_ENV}"
+      for SERVICE in svc-platform-control svc-inventory svc-apm svc-apdex svc-schedule svc-license; do
+        kustomize edit set image \
+          "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${SERVICE}=${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${SERVICE}:${IMAGE_TAG}"
+      done
+      cd "${CI_PROJECT_DIR}/gitops-config"
+      git config user.name "gitlab-ci[bot]"
+      git config user.email "gitlab-ci[bot]@noreply.${GITLAB_HOST}"
+      git add -A
+      git diff --cached --quiet && echo "No changes" && exit 0
+      git commit -m "deploy(back-end-sisc): ${DEPLOY_ENV} → ${IMAGE_TAG}"
+      git push
+
+deploy-qa:
+  extends: .deploy
+  stage: deploy-qa
+  environment:
+    name: qa
+  variables:
+    DEPLOY_ENV: qa
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+deploy-staging:
+  extends: .deploy
+  stage: deploy-staging
+  environment:
+    name: staging
+  variables:
+    DEPLOY_ENV: staging
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
+deploy-prod:
+  extends: .deploy
+  stage: deploy-prod
+  needs:
+    - job: deploy-staging
+    - job: build-and-push
+  environment:
+    name: production
+  variables:
+    DEPLOY_ENV: prod
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+      when: manual
+      allow_failure: false

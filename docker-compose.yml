@@ -1,0 +1,171 @@
+# docker-compose.yml — ambiente local completo SISC Manager
+# Uso: docker compose up --build
+#
+# Variáveis sensíveis ficam em .env na raiz do monorepo.
+# Copie .env.example para .env e preencha antes de rodar.
+
+version: '3.9'
+
+services:
+
+  # ── svc-platform-control (porta 3002) ──────────────────────────
+  svc-platform-control:
+    build:
+      context: ./svc-platform-control
+      dockerfile: ../Dockerfile.svc-platform-control
+    container_name: svc-platform-control
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      MONGODB_URI: ${MONGODB_URI}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES: ${JWT_EXPIRES:-8h}
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+      TENANTS_CACHE_INTERVAL_MS: ${TENANTS_CACHE_INTERVAL_MS:-300000}
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3002/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── svc-inventory (porta 3003) ─────────────────────────────────
+  svc-inventory:
+    build:
+      context: ./svc-inventory
+      dockerfile: ../Dockerfile.svc-inventory
+    container_name: svc-inventory
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      PORT: 3003
+      JWT_SECRET: ${JWT_SECRET}
+      PLATFORM_CONTROL_URL: http://svc-platform-control:3002
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+      CRON_SECRET: ${CRON_SECRET}
+    depends_on:
+      svc-platform-control:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3003/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── svc-apm (porta 3004) ───────────────────────────────────────
+  svc-apm:
+    build:
+      context: ./svc-apm
+      dockerfile: ../Dockerfile.svc-apm
+    container_name: svc-apm
+    restart: unless-stopped
+    ports:
+      - "3004:3004"
+    environment:
+      PORT: 3004
+      JWT_SECRET: ${JWT_SECRET}
+      PLATFORM_CONTROL_URL: http://svc-platform-control:3002
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+    depends_on:
+      svc-platform-control:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3004/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── svc-apdex (porta 3005) ─────────────────────────────────────
+  svc-apdex:
+    build:
+      context: ./svc-apdex
+      dockerfile: ../Dockerfile.svc-apdex
+    container_name: svc-apdex
+    restart: unless-stopped
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+      JWT_SECRET: ${JWT_SECRET}
+      PLATFORM_CONTROL_URL: http://svc-platform-control:3002
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+    depends_on:
+      svc-platform-control:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3005/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── svc-schedule (porta 3006) ──────────────────────────────────
+  svc-schedule:
+    build:
+      context: ./svc-schedule
+      dockerfile: ../Dockerfile.svc-schedule
+    container_name: svc-schedule
+    restart: unless-stopped
+    ports:
+      - "3006:3006"
+    environment:
+      PORT: 3006
+      MONGODB_URI: ${MONGODB_URI}
+      JWT_SECRET: ${JWT_SECRET}
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3006/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── svc-license (porta 3007) ──────────────────────────────────
+  svc-license:
+    build:
+      context: ./svc-license
+      dockerfile: ../Dockerfile.svc-license
+    container_name: svc-license
+    restart: unless-stopped
+    ports:
+      - "3007:3007"
+    environment:
+      PORT: 3007
+      MONGODB_URI: ${MONGODB_URI}
+      JWT_SECRET: ${JWT_SECRET}
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3007/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── frontend (porta 80) ────────────────────────────────────────
+  frontend:
+    build:
+      context: ./front-sisc
+      dockerfile: ../Dockerfile.frontend
+      args:
+        VITE_API_PLATFORM_CONTROL: http://localhost:3002
+        VITE_API_INVENTORY: http://localhost:3003
+        VITE_API_APM: http://localhost:3004
+        VITE_API_APDEX: http://localhost:3005
+        VITE_API_SCHEDULE: http://localhost:3006
+        VITE_API_LICENSE: http://localhost:3007
+    container_name: frontend-sisc
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      svc-platform-control:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:80/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

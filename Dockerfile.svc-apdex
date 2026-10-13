@@ -1,0 +1,39 @@
+# ── Stage 1: instalar dependências ───────────────────────────────
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+
+# Copia apenas os manifests para aproveitar cache do Docker
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+# ── Stage 2: runtime ─────────────────────────────────────────────
+FROM node:20-alpine
+
+# Metadados
+LABEL maintainer="Very Tecnologia" \
+      service="svc-apdex"
+
+WORKDIR /app
+
+# Usuário não-root por segurança
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copia dependências do stage anterior
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copia código-fonte (respeitará .dockerignore)
+COPY . .
+
+# Garante que o usuário tem acesso ao diretório
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 3005
+
+# Healthcheck — o orquestrador sabe se o serviço está vivo
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:3005/health || exit 1
+
+CMD ["node", "server.js"]

@@ -1,0 +1,26 @@
+# Dependências — reinstaladas no build
+node_modules
+npm-debug.log*
+
+# Ambiente local
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Logs
+logs
+*.log
+
+# Testes
+**/*.test.js
+**/*.spec.js
+coverage/
+
+# Editor
+.vscode
+.idea
+*.swp
